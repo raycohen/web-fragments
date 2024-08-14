@@ -325,6 +325,10 @@ function monkeyPatchIFrameEnvironment(
 
 		querySelector: {
 			value(selector: string) {
+				// This breaks out of the shadowRoot, which dashboard needs for SqLoadingManager
+				if (arguments[0] === ":root") {
+					return mainDocument.querySelector(":root");
+				}
 				return shadowRoot.querySelector(selector);
 			},
 		},
@@ -536,6 +540,37 @@ function monkeyPatchIFrameEnvironment(
 					arguments as any
 				);
 			},
+		},
+	});
+
+	iframeWindow.NodeList = mainWindow.NodeList;
+
+	const domQueryProperties2: (keyof Pick<
+		Document,
+		"getElementsByTagName" | "getElementsByTagNameNS"
+	>)[] = ["getElementsByTagName", "getElementsByTagNameNS"];
+
+	for (const queryProperty of domQueryProperties2) {
+		Object.defineProperty(iframeDocumentPrototype, queryProperty, {
+			value: function reframedCreateFn2(tagName: string) {
+				if (tagName.toUpperCase() === "HEAD") {
+					return [shadowRoot.firstElementChild];
+				}
+				return shadowRoot.querySelectorAll(`[${tagName}]`);
+			},
+		});
+	}
+
+	Object.defineProperty(iframeWindow, "getComputedStyle", {
+		value: function reframedGetComputedStyle(element: Element) {
+			return mainWindow.getComputedStyle(element);
+		},
+	});
+
+	// for market support, make sure all CSS Stylesheets are defined in the parent window scope
+	Object.defineProperty(iframeWindow, "CSSStyleSheet", {
+		get() {
+			return mainWindow.CSSStyleSheet;
 		},
 	});
 
