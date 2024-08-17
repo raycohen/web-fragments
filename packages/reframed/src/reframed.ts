@@ -505,6 +505,10 @@ function monkeyPatchIFrameEnvironment(
 				if (tagName.toUpperCase() === "HEAD") {
 					return [shadowRoot.firstElementChild];
 				}
+				// livereload-js and martech.js expect to be able to find scripts
+				if (tagName.toUpperCase() === "SCRIPT") {
+					return mainDocument.querySelectorAll("script");
+				}
 				return shadowRoot.querySelectorAll(`[${tagName}]`);
 			},
 		});
