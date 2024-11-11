@@ -95,6 +95,16 @@ export function getMiddleware(
 		// Add a header for signalling embedded mode
 		fragmentReq.headers.set("x-fragment-mode", "embedded");
 
+		// CSRF
+		fragmentReq.headers.set(
+			"x-csrf-token",
+			request.headers
+				.get("cookie")
+				?.split(";")
+				.find((c: any) => c.includes("_js_csrf"))
+				?.split("=")[1] || ""
+		);
+
 		if (mode === "development") {
 			// brotli is not currently supported during local development (with `wrangler (pages) dev`)
 			// so we set the accept-encoding to gzip to avoid problems with it
