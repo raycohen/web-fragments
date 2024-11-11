@@ -310,12 +310,26 @@ function monkeyPatchIFrameEnvironment(
 
 		getElementsByTagName: {
 			value(name: string) {
+				if (tagName.toUpperCase() === "HEAD") {
+					return [shadowRoot.firstElementChild];
+				}
+				// livereload-js and martech.js expect to be able to find scripts
+				if (tagName.toUpperCase() === "SCRIPT") {
+					return mainDocument.querySelectorAll("script");
+				}
 				return shadowRoot.firstElementChild?.getElementsByTagName(name);
 			},
 		},
 
 		getElementsByTagNameNS: {
 			value(namespaceURI: string | null, name: string) {
+				if (tagName.toUpperCase() === "HEAD") {
+					return [shadowRoot.firstElementChild];
+				}
+				// livereload-js and martech.js expect to be able to find scripts
+				if (tagName.toUpperCase() === "SCRIPT") {
+					return mainDocument.querySelectorAll("script");
+				}
 				return shadowRoot.firstElementChild?.getElementsByTagNameNS(
 					namespaceURI,
 					name
@@ -542,28 +556,6 @@ function monkeyPatchIFrameEnvironment(
 			},
 		},
 	});
-
-	iframeWindow.NodeList = mainWindow.NodeList;
-
-	const domQueryProperties2: (keyof Pick<
-		Document,
-		"getElementsByTagName" | "getElementsByTagNameNS"
-	>)[] = ["getElementsByTagName", "getElementsByTagNameNS"];
-
-	for (const queryProperty of domQueryProperties2) {
-		Object.defineProperty(iframeDocumentPrototype, queryProperty, {
-			value: function reframedCreateFn2(tagName: string) {
-				if (tagName.toUpperCase() === "HEAD") {
-					return [shadowRoot.firstElementChild];
-				}
-				// livereload-js and martech.js expect to be able to find scripts
-				if (tagName.toUpperCase() === "SCRIPT") {
-					return mainDocument.querySelectorAll("script");
-				}
-				return shadowRoot.querySelectorAll(`[${tagName}]`);
-			},
-		});
-	}
 
 	Object.defineProperty(iframeWindow, "getComputedStyle", {
 		value: function reframedGetComputedStyle(element: Element) {
