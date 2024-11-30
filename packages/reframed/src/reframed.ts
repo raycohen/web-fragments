@@ -145,11 +145,12 @@ async function reframeWithFetch(
 			.pipeThrough(new TextDecoderStream())
 			.pipeTo(new WritableDOMStream(target))
 			.finally(() => {
-				console.log("reframing done (reframeWithFetch)!", {
-					source: reframedSrc,
-					target,
-					title: iframe.contentDocument?.title,
-				});
+				import.meta.env.DEV &&
+					console.log("reframing done (reframeWithFetch)!", {
+						source: reframedSrc,
+						target,
+						title: iframe.contentDocument?.title,
+					});
 				resolve();
 			});
 	});
@@ -188,10 +189,11 @@ async function reframeFromTarget(
 			);
 		});
 
-		console.log("reframing done (reframeFromTarget)!", {
-			source,
-			title: document.defaultView!.document.title,
-		});
+		import.meta.env.DEV &&
+			console.log("reframing done (reframeFromTarget)!", {
+				source,
+				title: document.defaultView!.document.title,
+			});
 		resolve();
 	});
 
@@ -224,17 +226,41 @@ function monkeyPatchIFrameEnvironment(
 		return;
 	}
 
-	const iframeDocumentPrototype = Object.getPrototypeOf(
-		Object.getPrototypeOf(iframeDocument)
-	);
 	const mainDocument = shadowRoot.ownerDocument;
 	const mainWindow = mainDocument.defaultView!;
+
+	const globalConstructors: Function[] = Object.entries(
+		Object.getOwnPropertyDescriptors(iframeWindow)
+	).flatMap(([property, descriptor]) =>
+		/^[A-Z]/.test(property) && typeof descriptor.value === "function"
+			? descriptor.value
+			: []
+	);
+
+	function hasInstance(this: Function, instance: any) {
+		const parentContextConstructor: Function =
+			mainWindow[this.name as keyof typeof mainWindow];
+
+		return (
+			Function.prototype[Symbol.hasInstance].call(this, instance) ||
+			(typeof parentContextConstructor === "function" &&
+				instance instanceof parentContextConstructor)
+		);
+	}
+
+	// extend global constructors to support instanceof checks using
+	// their equivalent constructor from the parent execution context
+	globalConstructors.forEach((constructor) => {
+		Object.defineProperty(constructor, Symbol.hasInstance, {
+			value: hasInstance,
+		});
+	});
 
 	let updatedIframeTitle: string | undefined = undefined;
 
 	setInternalReference(iframeDocument, "body");
 
-	Object.defineProperties(iframeDocumentPrototype, {
+	Object.defineProperties(iframeDocument, {
 		title: {
 			get: function () {
 				return (
@@ -270,17 +296,60 @@ function monkeyPatchIFrameEnvironment(
 			},
 		},
 
-		// redirect getElementsByName to be a scoped reframedContainer.querySelector query
+		getElementsByClassName: {
+			value(names: string) {
+				return shadowRoot.firstElementChild?.getElementsByClassName(names);
+			},
+		},
+
 		getElementsByName: {
 			value(name: string) {
 				return shadowRoot.querySelector(`[name="${name}"]`);
 			},
 		},
 
-		// redirect querySelector to be a scoped reframedContainer.querySelector query
+		getElementsByTagName: {
+			value(name: string) {
+				if (tagName.toUpperCase() === "HEAD") {
+					return [shadowRoot.firstElementChild];
+				}
+				// livereload-js and martech.js expect to be able to find scripts
+				if (tagName.toUpperCase() === "SCRIPT") {
+					return mainDocument.querySelectorAll("script");
+				}
+				return shadowRoot.firstElementChild?.getElementsByTagName(name);
+			},
+		},
+
+		getElementsByTagNameNS: {
+			value(namespaceURI: string | null, name: string) {
+				if (tagName.toUpperCase() === "HEAD") {
+					return [shadowRoot.firstElementChild];
+				}
+				// livereload-js and martech.js expect to be able to find scripts
+				if (tagName.toUpperCase() === "SCRIPT") {
+					return mainDocument.querySelectorAll("script");
+				}
+				return shadowRoot.firstElementChild?.getElementsByTagNameNS(
+					namespaceURI,
+					name
+				);
+			},
+		},
+
 		querySelector: {
 			value(selector: string) {
+				// This breaks out of the shadowRoot, which dashboard needs for SqLoadingManager
+				if (arguments[0] === ":root") {
+					return mainDocument.querySelector(":root");
+				}
 				return shadowRoot.querySelector(selector);
+			},
+		},
+
+		querySelectorAll: {
+			value(selector: string) {
+				return shadowRoot.querySelectorAll(selector);
 			},
 		},
 
@@ -368,14 +437,6 @@ function monkeyPatchIFrameEnvironment(
 		},
 	} satisfies Partial<Record<keyof Document, any>>);
 
-	// TODO: we've started depending on this property in writable-dom,
-	// but we should stop doing that and remove this.
-	Object.defineProperty(iframeDocumentPrototype, "unreframedBody", {
-		get: () => {
-			return getInternalReference(iframeDocument, "body");
-		},
-	});
-
 	// iframe window patches
 	setInternalReference(iframeWindow, "history");
 
@@ -439,8 +500,6 @@ function monkeyPatchIFrameEnvironment(
 		| "createCDATASection"
 		| "createComment"
 		| "createDocumentFragment"
-		| "createElement"
-		| "createElementNS"
 		| "createEvent"
 		| "createExpression"
 		| "createNSResolver"
@@ -454,8 +513,6 @@ function monkeyPatchIFrameEnvironment(
 		"createCDATASection",
 		"createComment",
 		"createDocumentFragment",
-		"createElement",
-		"createElementNS",
 		"createEvent",
 		"createExpression",
 		"createNSResolver",
@@ -466,7 +523,7 @@ function monkeyPatchIFrameEnvironment(
 		"createTreeWalker",
 	];
 	for (const createProperty of domCreateProperties) {
-		Object.defineProperty(iframeDocumentPrototype, createProperty, {
+		Object.defineProperty(iframeDocument, createProperty, {
 			value: function reframedCreateFn() {
 				// @ts-expect-error WTD?!?
 				return mainDocument[createProperty].apply(mainDocument, arguments);
@@ -474,29 +531,44 @@ function monkeyPatchIFrameEnvironment(
 		});
 	}
 
-	// methods to query for elements that can be retargeted into the reframedContainer
-	const domQueryProperties: (keyof Pick<
-		Document,
-		| "querySelector"
-		| "querySelectorAll"
-		| "getElementsByClassName"
-		| "getElementsByTagName"
-		| "getElementsByTagNameNS"
-	>)[] = [
-		"querySelector",
-		"querySelectorAll",
-		"getElementsByClassName",
-		"getElementsByTagName",
-		"getElementsByTagNameNS",
-	];
-	for (const queryProperty of domQueryProperties) {
-		Object.defineProperty(iframeDocumentPrototype, queryProperty, {
-			value: function reframedCreateFn() {
-				// @ts-expect-error WTD?!?
-				return shadowRoot[queryProperty].apply(shadowRoot, arguments);
+	Object.defineProperties(iframeDocument, {
+		createElement: {
+			value: function createElement(
+				...[tagName]: Parameters<Document["createElement"]>
+			) {
+				return Document.prototype.createElement.apply(
+					tagName.includes("-") ? iframeDocument : mainDocument,
+					arguments as any
+				);
 			},
-		});
-	}
+		},
+		createElementNS: {
+			value: function createElementNS(
+				...[namespaceURI, tagName]: Parameters<Document["createElementNS"]>
+			) {
+				return Document.prototype.createElementNS.apply(
+					namespaceURI === "http://www.w3.org/1999/xhtml" &&
+						tagName.includes("-")
+						? iframeDocument
+						: mainDocument,
+					arguments as any
+				);
+			},
+		},
+	});
+
+	Object.defineProperty(iframeWindow, "getComputedStyle", {
+		value: function reframedGetComputedStyle(element: Element) {
+			return mainWindow.getComputedStyle(element);
+		},
+	});
+
+	// for market support, make sure all CSS Stylesheets are defined in the parent window scope
+	Object.defineProperty(iframeWindow, "CSSStyleSheet", {
+		get() {
+			return mainWindow.CSSStyleSheet;
+		},
+	});
 
 	// Create an abort controller we'll use to remove event listeners when the iframe is destroyed
 	const controller = new AbortController();

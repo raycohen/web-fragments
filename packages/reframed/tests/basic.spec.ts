@@ -136,3 +136,82 @@ test("iframe window size properties delegate to the main frame", async ({
 		expect(iframeValue).toBeGreaterThan(0);
 	}
 });
+
+test("custom elements registries are scoped to reframed contexts", async ({
+	page,
+}) => {
+	await page.setContent(`
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <script>
+          window.customElements.define("custom-element", class extends HTMLElement {
+            connectedCallback() { this.innerText = "hello from main" }
+          });
+        </script>
+      </head>
+      <body>
+        <div id="frame1">
+          <template shadowrootmode="open">
+            <div data-testid="container"></div>
+            <script type="inert">
+              window.customElements.define("custom-element", class extends HTMLElement {
+                connectedCallback() { this.innerText = "hello from frame1" }
+              });
+              document.body.appendChild(document.createElement('custom-element'));
+            </script>
+          </template>
+        </div>
+        <div id="frame2">
+          <template shadowrootmode="open">
+            <div data-testid="container"></div>
+            <script type="inert">
+              window.customElements.define("custom-element", class extends HTMLElement {
+                connectedCallback() { this.innerText = "hello from frame2" }
+              });
+              document.body.appendChild(document.createElement('custom-element'));
+            </script>
+          </template>
+        </div>
+        <script>
+          Reframed.reframed(frame1.shadowRoot, {container: frame1})
+          Reframed.reframed(frame2.shadowRoot, {container: frame2})
+        </script>
+        <script>
+          document.body.appendChild(document.createElement('custom-element'));
+        </script>
+      </body>
+    </html>`);
+
+	await expect(page.getByText("hello from main")).toBeVisible();
+	await expect(page.getByText("hello from frame1")).toBeVisible();
+	await expect(page.getByText("hello from frame2")).toBeVisible();
+});
+
+test("instanceof checks in a reframed context work with objects constructed in the parent execution context", async ({
+	page,
+}) => {
+	await page.setContent(`
+    <!DOCTYPE html>
+    <html>
+      <body>
+        <div id="target">
+          <template shadowrootmode="open">
+            <div id="element"></div>
+          </template>
+        </div>
+        <script>
+          Reframed.reframed(target.shadowRoot, { container: target })
+        </script>
+      </body>
+    </html>
+	`);
+
+	const reframedContext = page.frames()[1];
+
+	expect(
+		await reframedContext.evaluate(
+			"document.getElementById('element') instanceof Node"
+		)
+	).toBe(true);
+});
